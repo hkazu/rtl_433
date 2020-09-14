@@ -1,81 +1,80 @@
-/* Akhan remote keyless entry system
-*
-*	This RKE system uses a HS1527 OTP encoder (http://sc-tech.cn/en/hs1527.pdf)
-*	Each message consists of a preamble, 20 bit id and 4 data bits.
-*
-*	(code based on chuango.c and generic_remote.c)
+/** @file
+    Akhan remote keyless entry system.
+
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation; either version 2 of the License, or
+    (at your option) any later version.
 */
-#include "rtl_433.h"
-#include "pulse_demod.h"
-#include "util.h"
-#include "data.h"
 
-static int akhan_rke_callback(bitbuffer_t *bitbuffer) {
-	bitrow_t *bb = bitbuffer->bb;
-	uint8_t *b = bb[0];
+/**
+Akhan remote keyless entry system.
 
-	//invert bits, short pulse is 0, long pulse is 1
-	b[0] = ~b[0];
-	b[1] = ~b[1];
-	b[2] = ~b[2];
+This RKE system uses a HS1527 OTP encoder (http://sc-tech.cn/en/hs1527.pdf)
+Each message consists of a preamble, 20 bit id and 4 data bits.
 
-	unsigned bits = bitbuffer->bits_per_row[0];
+(code based on chuango.c and generic_remote.c)
 
-	if (bits == 25) {
-		char time_str[LOCAL_TIME_BUFLEN];
-		local_time_str(0, time_str);
-		data_t *data;
+Note: simple 24 bit fixed ID protocol (x1527 style) and should be handled by the flex decoder.
+*/
 
-		uint32_t ID = (b[0] << 12) | (b[1] << 4) | (b[2] >> 4);
-		uint32_t dataBits = b[2] & 0x0F;
-		int isAkhan = 1;
-		char *CMD;
+#include "decoder.h"
 
-		switch (dataBits) {
-			case 0x1:	CMD = "0x1 (Lock)"; break;
-			case 0x2:	CMD = "0x2 (Unlock)"; break;
-			case 0x4:	CMD = "0x4 (Mute)"; break;
-			case 0x8:	CMD = "0x8 (Alarm)"; break;
-			default:
-				isAkhan = 0;
-				break;
-		}
+static int akhan_rke_callback(r_device *decoder, bitbuffer_t *bitbuffer) {
+    data_t *data;
+    uint8_t *b;
+    int id;
+    int cmd;
+    char *cmd_str;
 
-		if (isAkhan == 1) {
-			data = data_make(	"time",		"",				DATA_STRING,	time_str,
-									"model",	"",				DATA_STRING,	"Akhan 100F14 remote keyless entry",
-									"id",			"ID (20bit)",	DATA_FORMAT, 	"0x%x", 	DATA_INT, ID,
-									"data",		"Data (4bit)",	DATA_STRING,	CMD,
-									NULL);
+    if (bitbuffer->bits_per_row[0] != 25)
+        return DECODE_ABORT_LENGTH;
+    b = bitbuffer->bb[0];
 
-			data_acquired_handler(data);
-			return 1;
-		}
+    //invert bits, short pulse is 0, long pulse is 1
+    b[0] = ~b[0];
+    b[1] = ~b[1];
+    b[2] = ~b[2];
 
-	}
-	return 0;
+    id = (b[0] << 12) | (b[1] << 4) | (b[2] >> 4);
+    cmd = b[2] & 0x0F;
+    switch (cmd) {
+        case 0x1: cmd_str = "0x1 (Lock)"; break;
+        case 0x2: cmd_str = "0x2 (Unlock)"; break;
+        case 0x4: cmd_str = "0x4 (Mute)"; break;
+        case 0x8: cmd_str = "0x8 (Alarm)"; break;
+        default:  cmd_str = NULL; break;
+    }
+
+    if (!cmd_str)
+        return DECODE_FAIL_SANITY;
+
+    data = data_make(
+            "model",    "",             DATA_STRING, _X("Akhan-100F14","Akhan 100F14 remote keyless entry"),
+            "id",       "ID (20bit)",   DATA_FORMAT, "0x%x", DATA_INT, id,
+            "data",     "Data (4bit)",  DATA_STRING, cmd_str,
+            NULL);
+
+    decoder_output_data(decoder, data);
+    return 1;
 }
 
 static char *output_fields[] = {
-	"time",
-	"model",
-	"id",
-	"data",
-	NULL
-};
-
-PWM_Precise_Parameters pwm_precise_parameters_akhan = {
-	.pulse_tolerance	= 20,
-	.pulse_sync_width	= 0,
+    "model",
+    "id",
+    "data",
+    NULL
 };
 
 r_device akhan_100F14 = {
-	.name          = "Akhan 100F14 remote keyless entry",
-	.modulation    = OOK_PULSE_PWM_PRECISE,
-	.short_limit   = 316,
-	.long_limit    = 1020,
-	.reset_limit   = 1800,
-	.json_callback = &akhan_rke_callback,
-	.disabled      = 0,
-	.demod_arg     = (uintptr_t)&pwm_precise_parameters_akhan,
+    .name          = "Akhan 100F14 remote keyless entry",
+    .modulation    = OOK_PULSE_PWM,
+    .short_width   = 316,
+    .long_width    = 1020,
+    .reset_limit   = 1800,
+    .sync_width    = 0,
+    .tolerance     = 80, // us
+    .decode_fn     = &akhan_rke_callback,
+    .disabled      = 0,
+    .fields        = output_fields,
 };

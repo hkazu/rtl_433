@@ -1,96 +1,83 @@
+/** @file
+    Ford Car Key.
+ 
+ 
+    This program is free software; you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation; either version 2 of the License, or
+    (at your option) any later version.
 
-/* Ford Car Key
- *
- * Identifies event, but does not attempt to decrypt rolling code...
- *
- * 
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *           dd dd dd 
- * [00] {60} 74 28 c1 06 a4 1a 05 20
- * [00] {60} 74 28 c1 06 a4 1a 05 20
- * [00] {60} 74 28 c1 06 a4 1a 05 20
- * [00] {60} 74 28 c1 06 a4 1a 05 20
+*/
+/**
+Ford Car Key.
 
- */
-#include "rtl_433.h"
-#include "data.h"
-#include "util.h"
-#define FORD_BITLEN  40
-#define FORD_BYTELEN 5
-#define FORD_PACKETCOUNT 4
+Identifies event, but does not attempt to decrypt rolling code...
+Note: this used to have a broken PWM decoding, but is now proper DMC.
+The output changed and the fields are very likely not as intended.
 
+  [00] {1} 80 : 1
+  [01] {9} 00 80 : 00000000 1
+  [02] {1} 80 : 1
+  [03] {78} 03 e0 01 e4 e0 90 52 97 39 60
 
-static int fordremote_callback(bitbuffer_t *bitbuffer) {
-	bitrow_t *bb = bitbuffer->bb;
-        uint8_t *bytes = bitbuffer->bb[0];
-	data_t *data;
-	char time_str[LOCAL_TIME_BUFLEN];
-    	local_time_str(0, time_str);
-	int i;
-	uint8_t id=0;
-    	uint32_t device_id =0;
+*/
 
-	unsigned bits = bitbuffer->bits_per_row[0];
+#include "decoder.h"
 
+static int fordremote_callback(r_device *decoder, bitbuffer_t *bitbuffer) {
+    data_t *data;
+    uint8_t *bytes;
+    int found = 0;
+    int device_id, code;
 
- for (int i = 0; i < bitbuffer->num_rows; i++)
-{
-	// Validate preamble
-	if ((bitbuffer->bits_per_row[i] == 6) && (bytes[00]==120))
-	{
-	 if (debug_output) {
-                 bitbuffer_print(bitbuffer);
-                }
-
-	}
-
-	// Validate package code goes here
-	else if((bitbuffer->bits_per_row[i] > 55) && ((bb[i][0] >> 4)==7))
-	{
-	if (debug_output) {
-		 bitbuffer_print(bitbuffer);
-		}
-	device_id = ((bb[i][0]<<16)| (bb[i][1]<<8)|(bb[i][2]));
-	uint16_t code = (bb[i][7]);
-
-	/* Get time now */
-	local_time_str(0, time_str);
-
-     data = data_make(
-                        "time", "time", DATA_STRING, time_str,
-                        "model", "model", DATA_STRING, "Ford Car Remote",
-			"device_id", "device-id", DATA_INT, device_id,
-                        "code", "data", DATA_INT, code,
-                      NULL);
-
-       data_acquired_handler(data);
-       return 1;
+    // expect {1} {9} {1} preamble
+    for (int i = 3; i < bitbuffer->num_rows; i++) {
+        if (bitbuffer->bits_per_row[i] < 78) {
+            continue; // DECODE_ABORT_LENGTH
         }
-return 0;
-}
-return 0;
+
+        // Validate preamble
+        if (bitbuffer->bits_per_row[i - 3] != 1 || bitbuffer->bits_per_row[i - 1] != 1
+                || bitbuffer->bits_per_row[i - 2] != 9 || bitbuffer->bb[i - 2][0] != 0) {
+            continue; // DECODE_ABORT_EARLY
+        }
+
+        if (decoder->verbose) {
+            bitbuffer_print(bitbuffer);
+        }
+
+        bytes = bitbuffer->bb[i];
+        device_id = (bytes[0]<<16) | (bytes[1]<<8) | bytes[2];
+        code = bytes[7];
+
+        /* Get time now */
+        data = data_make(
+                "model",    "model",    DATA_STRING, _X("Ford-CarRemote","Ford Car Remote"),
+                "id",       "device-id",    DATA_INT, device_id,
+                "code",     "data",     DATA_INT, code,
+                NULL);
+        decoder_output_data(decoder, data);
+
+        found++;
+    }
+    return found;
 }
 
 static char *output_fields[] = {
-        "time",
-        "model",
-	"device_id",
-        "code",
-        NULL
-        };
-
-r_device fordremote = {
-	.name		= "Ford Car Key",
-	.modulation	= OOK_PULSE_PWM_TERNARY,
-	.short_limit	= 312,
-	.long_limit	= 625,	// Not used
-	.reset_limit	= 1500,
-	.json_callback	= &fordremote_callback,
-	.disabled		= 0,
-	.demod_arg		= 2,
-        .fields		= output_fields	
+    "model",
+    "id",
+    "code",
+    NULL
 };
 
+r_device fordremote = {
+    .name           = "Ford Car Key",
+    .modulation     = OOK_PULSE_DMC,
+    .short_width    = 250,  // half-bit width is 250 us
+    .long_width     = 500,  // bit width is 500 us
+    .reset_limit    = 4000, // sync gap is 3500 us, preamble gap is 38400 us, packet gap is 52000 us
+    .tolerance      = 50,
+    .decode_fn      = &fordremote_callback,
+    .disabled       = 0,
+    .fields         = output_fields
+};
